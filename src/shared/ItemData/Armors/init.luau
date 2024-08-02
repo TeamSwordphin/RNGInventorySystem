@@ -1,0 +1,16 @@
+local Category = {
+	Icon = "rbxassetid://18520107045",
+	Order = 2,
+}
+
+Category._Items = require(script.List)
+
+function Category:GetItems()
+	return Category._Items
+end
+
+function Category:GetItem(item: number | string)
+	return Category:GetItems()[tonumber(item)]
+end
+
+return Category
