@@ -5,6 +5,10 @@ local Category = {
 
 Category._Items = require(script.List)
 
+for _, item in Category._Items do
+	item.Category = script.Name
+end
+
 function Category:GetItems()
 	return Category._Items
 end

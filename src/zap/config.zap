@@ -1,6 +1,13 @@
 opt server_output = "src/server/Zap.luau"
 opt client_output = "src/client/Zap.luau"
 
+type TradeData = struct {
+	category: string,
+	id: u32,
+	level: u8,
+	count: u32?
+}
+
 funct RequestUpgradeInventorySpace = {
 	call: Async,
 	rets: struct {
@@ -125,9 +132,44 @@ event ServerSentItemTradeOffer = {
 	from: Server,
 	type: Reliable,
 	call: ManyAsync,
-	data: struct {
-		category: string,
-		id: u32,
-		level: u8
-	}
+	data: map { [u16]: TradeData }
+}
+
+event ClientAcceptTradeOffer = {
+	from: Client,
+	type: Reliable,
+	call: ManyAsync
+}
+
+event ServerSentAcceptTradeOffer = {
+	from: Server,
+	type: Reliable,
+	call: ManyAsync
+}
+
+event BothPartiesAcceptedTradeOffer = {
+	from: Server,
+	type: Reliable,
+	call: ManyAsync
+}
+
+event ClientToggleIgnoreTradeRequest = {
+	from: Client,
+	type: Reliable,
+	call: ManyAsync
+}
+
+funct ClientPurchaseTradeFeature = {
+	call: Async,
+	rets: struct {
+		success: boolean
+	},
+}
+
+funct ClientRequestPotionActivate = {
+	call: Async,
+	args: u16,
+	rets: struct {
+		success: boolean
+	},
 }

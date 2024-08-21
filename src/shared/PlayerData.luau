@@ -6,14 +6,15 @@
 return {
 	MaximumInventorySpace = 200,
 	Inventory = {},
+	PotionInventory = {},
 
 	CraftProgress = {},
 	AutoRollCraftIndex = 0,
 
-	TradeUnlocked = true,
+	TradeUnlocked = false,
 	TradeIgnoreRequests = false,
 
-	Money = 0,
+	Money = 500,
 	RollSpeed = 2,
-	Luck = 0,
+	Luck = 0.1,
 }

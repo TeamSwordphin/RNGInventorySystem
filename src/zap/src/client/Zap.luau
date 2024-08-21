@@ -133,6 +133,18 @@ if not RunService:IsRunning() then
 		ServerSentItemTradeOffer = table.freeze({
 			On = noop
 		}),
+		ClientAcceptTradeOffer = table.freeze({
+			Fire = noop
+		}),
+		ServerSentAcceptTradeOffer = table.freeze({
+			On = noop
+		}),
+		BothPartiesAcceptedTradeOffer = table.freeze({
+			On = noop
+		}),
+		ClientToggleIgnoreTradeRequest = table.freeze({
+			Fire = noop
+		}),
 		RequestUpgradeInventorySpace = table.freeze({
 			Call = noop
 		}),
@@ -151,6 +163,12 @@ if not RunService:IsRunning() then
 		RequestCurrentTradeStatus = table.freeze({
 			Call = noop
 		}),
+		ClientPurchaseTradeFeature = table.freeze({
+			Call = noop
+		}),
+		ClientRequestPotionActivate = table.freeze({
+			Call = noop
+		}),
 	}) :: Events
 end
 if RunService:IsServer() then
@@ -162,6 +180,46 @@ local unreliable = ReplicatedStorage:WaitForChild("ZAP_UNRELIABLE")
 assert(reliable:IsA("RemoteEvent"), "Expected ZAP_RELIABLE to be a RemoteEvent")
 assert(unreliable:IsA("UnreliableRemoteEvent"), "Expected ZAP_UNRELIABLE to be an UnreliableRemoteEvent")
 
+export type TradeData = ({
+	category: (string),
+	id: (number),
+	level: (number),
+	count: ((number)?),
+})
+function types.write_TradeData(value: TradeData)
+	local len_1 = #value.category
+	alloc(2)
+	buffer.writeu16(outgoing_buff, outgoing_apos, len_1)
+	alloc(len_1)
+	buffer.writestring(outgoing_buff, outgoing_apos, value.category, len_1)
+	alloc(4)
+	buffer.writeu32(outgoing_buff, outgoing_apos, value.id)
+	alloc(1)
+	buffer.writeu8(outgoing_buff, outgoing_apos, value.level)
+	if value.count == nil then
+		alloc(1)
+		buffer.writeu8(outgoing_buff, outgoing_apos, 0)
+	else
+		alloc(1)
+		buffer.writeu8(outgoing_buff, outgoing_apos, 1)
+		alloc(4)
+		buffer.writeu32(outgoing_buff, outgoing_apos, value.count)
+	end
+end
+function types.read_TradeData()
+	local value;
+	value = {}
+	local len_1 = buffer.readu16(incoming_buff, read(2))
+	value.category = buffer.readstring(incoming_buff, read(len_1), len_1)
+	value.id = buffer.readu32(incoming_buff, read(4))
+	value.level = buffer.readu8(incoming_buff, read(1))
+	if buffer.readu8(incoming_buff, read(1)) == 1 then
+		value.count = buffer.readu32(incoming_buff, read(4))
+	else
+		value.count = nil
+	end
+	return value
+end
 
 local function SendEvents()
 	if outgoing_used ~= 0 then
@@ -179,8 +237,8 @@ end
 
 RunService.Heartbeat:Connect(SendEvents)
 
-local events = table.create(15)
-local event_queue: { [number]: { any } } = table.create(15)
+local events = table.create(21)
+local event_queue: { [number]: { any } } = table.create(21)
 local function_call_id = 0
 events[3] = {}
 event_queue[3] = {}
@@ -190,12 +248,18 @@ events[7] = {}
 event_queue[7] = 0
 events[9] = {}
 event_queue[9] = {}
-event_queue[10] = table.create(255)
-event_queue[11] = table.create(255)
-event_queue[12] = table.create(255)
-event_queue[13] = table.create(255)
+events[11] = {}
+event_queue[11] = 0
+events[12] = {}
+event_queue[12] = 0
 event_queue[14] = table.create(255)
 event_queue[15] = table.create(255)
+event_queue[16] = table.create(255)
+event_queue[17] = table.create(255)
+event_queue[18] = table.create(255)
+event_queue[19] = table.create(255)
+event_queue[20] = table.create(255)
+event_queue[21] = table.create(255)
 reliable.OnClientEvent:Connect(function(buff, inst)
 	incoming_buff = buff
 	incoming_inst = inst
@@ -256,10 +320,13 @@ reliable.OnClientEvent:Connect(function(buff, inst)
 		elseif id == 9 then
 			local value
 			value = {}
-			local len_1 = buffer.readu16(incoming_buff, read(2))
-			value.category = buffer.readstring(incoming_buff, read(len_1), len_1)
-			value.id = buffer.readu32(incoming_buff, read(4))
-			value.level = buffer.readu8(incoming_buff, read(1))
+			for _ = 1, buffer.readu16(incoming_buff, read(2)) do
+				local key_1
+				local val_1
+				key_1 = buffer.readu16(incoming_buff, read(2))
+				val_1 = types.read_TradeData()
+				value[key_1] = val_1
+			end
 			if events[9][1] then
 				for _, cb in events[9] do
 					task.spawn(cb, value)
@@ -270,45 +337,36 @@ reliable.OnClientEvent:Connect(function(buff, inst)
 					warn(`[ZAP] {#event_queue[9]} events in queue for ServerSentItemTradeOffer. Did you forget to attach a listener?`)
 				end
 			end
-		elseif id == 10 then
-			local call_id = buffer.readu8(incoming_buff, read(1))
-			local value
-			value = {}
-			value.success = buffer.readu8(incoming_buff, read(1)) == 1
-			value.inventory = buffer.readu16(incoming_buff, read(2))
-			task.spawn(event_queue[10][call_id], value)
-			event_queue[10][call_id] = nil
 		elseif id == 11 then
-			local call_id = buffer.readu8(incoming_buff, read(1))
 			local value
-			value = {}
-			value.success = buffer.readu8(incoming_buff, read(1)) == 1
-			local len_1 = buffer.readu16(incoming_buff, read(2))
-			value.category = buffer.readstring(incoming_buff, read(len_1), len_1)
-			value.id = buffer.readu16(incoming_buff, read(2))
-			task.spawn(event_queue[11][call_id], value)
-			event_queue[11][call_id] = nil
+			if events[11][1] then
+				for _, cb in events[11] do
+					task.spawn(cb, value)
+				end
+			else
+				event_queue[11] += 1
+				if event_queue[11] > 16 then
+					warn(`[ZAP] {event_queue[11]} events in queue for ServerSentAcceptTradeOffer. Did you forget to attach a listener?`)
+				end
+			end
 		elseif id == 12 then
-			local call_id = buffer.readu8(incoming_buff, read(1))
 			local value
-			value = {}
-			value.success = buffer.readu8(incoming_buff, read(1)) == 1
-			value.count = buffer.readf64(incoming_buff, read(8))
-			task.spawn(event_queue[12][call_id], value)
-			event_queue[12][call_id] = nil
-		elseif id == 13 then
-			local call_id = buffer.readu8(incoming_buff, read(1))
-			local value
-			value = {}
-			value.success = buffer.readu8(incoming_buff, read(1)) == 1
-			value.count = buffer.readu32(incoming_buff, read(4))
-			task.spawn(event_queue[13][call_id], value)
-			event_queue[13][call_id] = nil
+			if events[12][1] then
+				for _, cb in events[12] do
+					task.spawn(cb, value)
+				end
+			else
+				event_queue[12] += 1
+				if event_queue[12] > 16 then
+					warn(`[ZAP] {event_queue[12]} events in queue for BothPartiesAcceptedTradeOffer. Did you forget to attach a listener?`)
+				end
+			end
 		elseif id == 14 then
 			local call_id = buffer.readu8(incoming_buff, read(1))
 			local value
 			value = {}
 			value.success = buffer.readu8(incoming_buff, read(1)) == 1
+			value.inventory = buffer.readu16(incoming_buff, read(2))
 			task.spawn(event_queue[14][call_id], value)
 			event_queue[14][call_id] = nil
 		elseif id == 15 then
@@ -316,8 +374,55 @@ reliable.OnClientEvent:Connect(function(buff, inst)
 			local value
 			value = {}
 			value.success = buffer.readu8(incoming_buff, read(1)) == 1
+			local len_1 = buffer.readu16(incoming_buff, read(2))
+			value.category = buffer.readstring(incoming_buff, read(len_1), len_1)
+			value.id = buffer.readu16(incoming_buff, read(2))
 			task.spawn(event_queue[15][call_id], value)
 			event_queue[15][call_id] = nil
+		elseif id == 16 then
+			local call_id = buffer.readu8(incoming_buff, read(1))
+			local value
+			value = {}
+			value.success = buffer.readu8(incoming_buff, read(1)) == 1
+			value.count = buffer.readf64(incoming_buff, read(8))
+			task.spawn(event_queue[16][call_id], value)
+			event_queue[16][call_id] = nil
+		elseif id == 17 then
+			local call_id = buffer.readu8(incoming_buff, read(1))
+			local value
+			value = {}
+			value.success = buffer.readu8(incoming_buff, read(1)) == 1
+			value.count = buffer.readu32(incoming_buff, read(4))
+			task.spawn(event_queue[17][call_id], value)
+			event_queue[17][call_id] = nil
+		elseif id == 18 then
+			local call_id = buffer.readu8(incoming_buff, read(1))
+			local value
+			value = {}
+			value.success = buffer.readu8(incoming_buff, read(1)) == 1
+			task.spawn(event_queue[18][call_id], value)
+			event_queue[18][call_id] = nil
+		elseif id == 19 then
+			local call_id = buffer.readu8(incoming_buff, read(1))
+			local value
+			value = {}
+			value.success = buffer.readu8(incoming_buff, read(1)) == 1
+			task.spawn(event_queue[19][call_id], value)
+			event_queue[19][call_id] = nil
+		elseif id == 20 then
+			local call_id = buffer.readu8(incoming_buff, read(1))
+			local value
+			value = {}
+			value.success = buffer.readu8(incoming_buff, read(1)) == 1
+			task.spawn(event_queue[20][call_id], value)
+			event_queue[20][call_id] = nil
+		elseif id == 21 then
+			local call_id = buffer.readu8(incoming_buff, read(1))
+			local value
+			value = {}
+			value.success = buffer.readu8(incoming_buff, read(1)) == 1
+			task.spawn(event_queue[21][call_id], value)
+			event_queue[21][call_id] = nil
 		else
 			error("Unknown event id")
 		end
@@ -374,6 +479,18 @@ local returns = table.freeze({
 			buffer.writeu8(outgoing_buff, outgoing_apos, Value.level)
 		end,
 	}),
+	ClientAcceptTradeOffer = table.freeze({
+		Fire = function()
+			alloc(1)
+			buffer.writeu8(outgoing_buff, outgoing_apos, 10)
+		end,
+	}),
+	ClientToggleIgnoreTradeRequest = table.freeze({
+		Fire = function()
+			alloc(1)
+			buffer.writeu8(outgoing_buff, outgoing_apos, 13)
+		end,
+	}),
 	OnPlayerTradeRequest = table.freeze({
 		On = function(Callback: ((Player)) -> ())
 			table.insert(events[3], Callback)
@@ -414,11 +531,7 @@ local returns = table.freeze({
 		end,
 	}),
 	ServerSentItemTradeOffer = table.freeze({
-		On = function(Callback: (({
-			category: (string),
-			id: (number),
-			level: (number),
-		})) -> ())
+		On = function(Callback: (({ [(number)]: (TradeData) })) -> ())
 			table.insert(events[9], Callback)
 			for _, value in event_queue[9] do
 				task.spawn(Callback, value)
@@ -429,19 +542,43 @@ local returns = table.freeze({
 			end
 		end,
 	}),
+	ServerSentAcceptTradeOffer = table.freeze({
+		On = function(Callback: () -> ())
+			table.insert(events[11], Callback)
+			for _ = 1, event_queue[11] do
+				task.spawn(Callback)
+			end
+			event_queue[11] = 0
+			return function()
+				table.remove(events[11], table.find(events[11], Callback))
+			end
+		end,
+	}),
+	BothPartiesAcceptedTradeOffer = table.freeze({
+		On = function(Callback: () -> ())
+			table.insert(events[12], Callback)
+			for _ = 1, event_queue[12] do
+				task.spawn(Callback)
+			end
+			event_queue[12] = 0
+			return function()
+				table.remove(events[12], table.find(events[12], Callback))
+			end
+		end,
+	}),
 	RequestUpgradeInventorySpace = table.freeze({
 		Call = function()
 			alloc(1)
-			buffer.writeu8(outgoing_buff, outgoing_apos, 10)
+			buffer.writeu8(outgoing_buff, outgoing_apos, 14)
 			function_call_id += 1
 			function_call_id %= 256
-			if event_queue[10][function_call_id] then
+			if event_queue[14][function_call_id] then
 				function_call_id -= 1
 				error("Zap has more than 256 calls awaiting a response, and therefore this packet has been dropped")
 			end
 			alloc(1)
 			buffer.writeu8(outgoing_buff, outgoing_apos, function_call_id)
-			event_queue[10][function_call_id] = coroutine.running()
+			event_queue[14][function_call_id] = coroutine.running()
 			local value = coroutine.yield()
 			return value
 		end,
@@ -449,16 +586,16 @@ local returns = table.freeze({
 	RequestRandomLootDrop = table.freeze({
 		Call = function()
 			alloc(1)
-			buffer.writeu8(outgoing_buff, outgoing_apos, 11)
+			buffer.writeu8(outgoing_buff, outgoing_apos, 15)
 			function_call_id += 1
 			function_call_id %= 256
-			if event_queue[11][function_call_id] then
+			if event_queue[15][function_call_id] then
 				function_call_id -= 1
 				error("Zap has more than 256 calls awaiting a response, and therefore this packet has been dropped")
 			end
 			alloc(1)
 			buffer.writeu8(outgoing_buff, outgoing_apos, function_call_id)
-			event_queue[11][function_call_id] = coroutine.running()
+			event_queue[15][function_call_id] = coroutine.running()
 			local value = coroutine.yield()
 			return value
 		end,
@@ -469,10 +606,10 @@ local returns = table.freeze({
 			id: (number),
 		}))
 			alloc(1)
-			buffer.writeu8(outgoing_buff, outgoing_apos, 12)
+			buffer.writeu8(outgoing_buff, outgoing_apos, 16)
 			function_call_id += 1
 			function_call_id %= 256
-			if event_queue[12][function_call_id] then
+			if event_queue[16][function_call_id] then
 				function_call_id -= 1
 				error("Zap has more than 256 calls awaiting a response, and therefore this packet has been dropped")
 			end
@@ -485,7 +622,7 @@ local returns = table.freeze({
 			buffer.writestring(outgoing_buff, outgoing_apos, Value.category, len_1)
 			alloc(4)
 			buffer.writeu32(outgoing_buff, outgoing_apos, Value.id)
-			event_queue[12][function_call_id] = coroutine.running()
+			event_queue[16][function_call_id] = coroutine.running()
 			local value = coroutine.yield()
 			return value
 		end,
@@ -499,10 +636,10 @@ local returns = table.freeze({
 			amount: (number),
 		}))
 			alloc(1)
-			buffer.writeu8(outgoing_buff, outgoing_apos, 13)
+			buffer.writeu8(outgoing_buff, outgoing_apos, 17)
 			function_call_id += 1
 			function_call_id %= 256
-			if event_queue[13][function_call_id] then
+			if event_queue[17][function_call_id] then
 				function_call_id -= 1
 				error("Zap has more than 256 calls awaiting a response, and therefore this packet has been dropped")
 			end
@@ -521,7 +658,7 @@ local returns = table.freeze({
 			buffer.writeu8(outgoing_buff, outgoing_apos, Value.level)
 			alloc(4)
 			buffer.writeu32(outgoing_buff, outgoing_apos, Value.amount)
-			event_queue[13][function_call_id] = coroutine.running()
+			event_queue[17][function_call_id] = coroutine.running()
 			local value = coroutine.yield()
 			return value
 		end,
@@ -529,10 +666,10 @@ local returns = table.freeze({
 	CraftItem = table.freeze({
 		Call = function(Value: (number))
 			alloc(1)
-			buffer.writeu8(outgoing_buff, outgoing_apos, 14)
+			buffer.writeu8(outgoing_buff, outgoing_apos, 18)
 			function_call_id += 1
 			function_call_id %= 256
-			if event_queue[14][function_call_id] then
+			if event_queue[18][function_call_id] then
 				function_call_id -= 1
 				error("Zap has more than 256 calls awaiting a response, and therefore this packet has been dropped")
 			end
@@ -540,7 +677,7 @@ local returns = table.freeze({
 			buffer.writeu8(outgoing_buff, outgoing_apos, function_call_id)
 			alloc(2)
 			buffer.writeu16(outgoing_buff, outgoing_apos, Value)
-			event_queue[14][function_call_id] = coroutine.running()
+			event_queue[18][function_call_id] = coroutine.running()
 			local value = coroutine.yield()
 			return value
 		end,
@@ -548,16 +685,52 @@ local returns = table.freeze({
 	RequestCurrentTradeStatus = table.freeze({
 		Call = function()
 			alloc(1)
-			buffer.writeu8(outgoing_buff, outgoing_apos, 15)
+			buffer.writeu8(outgoing_buff, outgoing_apos, 19)
 			function_call_id += 1
 			function_call_id %= 256
-			if event_queue[15][function_call_id] then
+			if event_queue[19][function_call_id] then
 				function_call_id -= 1
 				error("Zap has more than 256 calls awaiting a response, and therefore this packet has been dropped")
 			end
 			alloc(1)
 			buffer.writeu8(outgoing_buff, outgoing_apos, function_call_id)
-			event_queue[15][function_call_id] = coroutine.running()
+			event_queue[19][function_call_id] = coroutine.running()
+			local value = coroutine.yield()
+			return value
+		end,
+	}),
+	ClientPurchaseTradeFeature = table.freeze({
+		Call = function()
+			alloc(1)
+			buffer.writeu8(outgoing_buff, outgoing_apos, 20)
+			function_call_id += 1
+			function_call_id %= 256
+			if event_queue[20][function_call_id] then
+				function_call_id -= 1
+				error("Zap has more than 256 calls awaiting a response, and therefore this packet has been dropped")
+			end
+			alloc(1)
+			buffer.writeu8(outgoing_buff, outgoing_apos, function_call_id)
+			event_queue[20][function_call_id] = coroutine.running()
+			local value = coroutine.yield()
+			return value
+		end,
+	}),
+	ClientRequestPotionActivate = table.freeze({
+		Call = function(Value: (number))
+			alloc(1)
+			buffer.writeu8(outgoing_buff, outgoing_apos, 21)
+			function_call_id += 1
+			function_call_id %= 256
+			if event_queue[21][function_call_id] then
+				function_call_id -= 1
+				error("Zap has more than 256 calls awaiting a response, and therefore this packet has been dropped")
+			end
+			alloc(1)
+			buffer.writeu8(outgoing_buff, outgoing_apos, function_call_id)
+			alloc(2)
+			buffer.writeu16(outgoing_buff, outgoing_apos, Value)
+			event_queue[21][function_call_id] = coroutine.running()
 			local value = coroutine.yield()
 			return value
 		end,

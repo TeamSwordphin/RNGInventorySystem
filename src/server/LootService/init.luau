@@ -7,12 +7,15 @@
 
 ]]
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local ItemData = require(ReplicatedStorage.Modules.ItemData)
 local DropData = require(ReplicatedStorage.Modules.DropData)
 local GetTotalItemCount = require(ReplicatedStorage.Modules.GetTotalItemCount)
+local PotionData = require(ReplicatedStorage.Modules.PotionData)
+local PotionList = PotionData:GetPotionList()
 
 local RandomSelection = require(ReplicatedStorage.Libraries.RandomSelection)
 local Freeze = require(ReplicatedStorage.Libraries.Freeze)
@@ -25,6 +28,7 @@ local CraftService = require(script.Parent.CraftService)
 local Zap = require(ServerScriptService.Network.Zap)
 
 local LootService = {}
+local Cooldowns = {}
 
 --- Returns a random category
 function LootService:GetRandomCategory()
@@ -34,14 +38,14 @@ end
 
 --- Returns a random item from a chosen category
 -- @params category: string -> the name of the category
-function LootService:DropRandomItem(category: string): number
+function LootService:DropRandomItem(category: string, luck: number): number
 	--- Convert the items to a weighted dictionary using Freeze's map function
 	local items = ItemData:GetCategory(category):GetItems()
 	local selectedItem = RandomSelection:getFromWeightedDictionary(Dictionary.map(items, function(data, id)
-		return data.DropChance or 100, id
+		return 100 / ((data.DropChance or 100) / luck), id
 	end))
 
-	return selectedItem
+	return selectedItem, category
 end
 
 --- Setups a Zap Function to listen to funct calls from clients. Add this item to their inventory
@@ -52,8 +56,67 @@ Zap.RequestRandomLootDrop.SetCallback(function(player: Player)
 		error(`No profile found for player {player.Name}!`)
 	end
 
-	local category = LootService:GetRandomCategory()
+	local properties = {
+		RollSpeed = PlayerData:Get(player, "RollSpeed"),
+		Luck = PlayerData:Get(player, "Luck"),
+	}
+
+	-- Determine potion buffs
+	for _, tag in player:GetTags() do
+		for key, potion in PotionList do
+			if tag == `Potion_{key}` then
+				-- Activate the potion!
+				if potion.Type == "Additive" then
+					for buffType, value in potion.Buffs do
+						if not properties[buffType] then
+							properties[buffType] = value
+						end
+
+						properties[buffType] += value
+					end
+				elseif potion.Type == "Override" then
+					for buffType, value in potion.Buffs do
+						properties[buffType] = value
+					end
+				end
+			end
+		end
+	end
+
 	local inventory = PlayerData:Get(player, "Inventory")
+	local cooldownTime = 2 / properties.RollSpeed
+
+	if os.clock() - (Cooldowns[player] or 0) < cooldownTime then
+		return { success = false, category = "All", id = 0 }
+	end
+
+	Cooldowns[player] = os.clock()
+
+	local id, category = LootService:DropRandomItem("All", properties.Luck)
+	id = tostring(id)
+
+	-- Determine if they got any roll type potions used
+	-- Determine potion buffs
+	for _, tag in player:GetTags() do
+		for key, potion in PotionList do
+			if tag == `Potion_{key}` then
+				-- Activate the potion!
+				if potion.Rolls then
+					local rollKey = `Potion{key}Rolls`
+					local currentRolls = (player:GetAttribute(rollKey) or 0)
+
+					player:SetAttribute(rollKey, currentRolls - 1)
+					currentRolls = player:GetAttribute(rollKey)
+
+					if currentRolls < 1 then
+						player:RemoveTag(`Potion_{key}`)
+						player:SetAttribute(rollKey, nil)
+						player:SetAttribute(`Potion{key}RollsMax`, nil)
+					end
+				end
+			end
+		end
+	end
 
 	--- Make sure the category exists in the inventory. This separates the inventory limit per category
 	if inventory[category] == nil then
@@ -68,9 +131,6 @@ Zap.RequestRandomLootDrop.SetCallback(function(player: Player)
 	--- Level of the item dropped
 	local droppedLevel = Random.new():NextInteger(1, 5)
 	local level = tostring(droppedLevel)
-
-	local id = LootService:DropRandomItem(category)
-	id = tostring(id)
 
 	--- Find existing item in the player's inventory. If it exists, stack it! Else create a new item data in their inventory.
 	if inventory[category][id] then
@@ -97,6 +157,10 @@ Zap.RequestRandomLootDrop.SetCallback(function(player: Player)
 	ItemCountTracker:AddCount(category, id)
 
 	return { success = true, category = category, id = id }
+end)
+
+Players.PlayerRemoving:Connect(function(player: Player)
+	Cooldowns[player] = nil
 end)
 
 return LootService

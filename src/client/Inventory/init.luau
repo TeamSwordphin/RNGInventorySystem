@@ -51,7 +51,7 @@ local function RequestLootDrop()
 		notifier.TextColor3 = rarity.Color
 		notifier.Text = `+1 {rarity.Name} Item: {item.Name}`
 	else
-		notifier.Text = `{category} inventory full!`
+		notifier.Text = `{category} is on cooldown!`
 	end
 
 	--- Make the notifier have some visual flair.
@@ -115,8 +115,9 @@ function InventorySystem:OpenCategory(category: string)
 				itemFrame:AddTag("_UIItemTradable")
 				itemFrame:SetAttribute(`Rarity`, item.Rarity)
 				itemFrame:SetAttribute(`Category`, category)
-				itemFrame:SetAttribute(`Level`, level)
-				itemFrame:SetAttribute(`Id`, id)
+				itemFrame:SetAttribute(`Level`, tostring(level))
+				itemFrame:SetAttribute(`Id`, tostring(id))
+				itemFrame:SetAttribute(`Count`, value.Count)
 				itemFrame.Parent = InventoryUI.Main.Body.Inventory
 
 				local button: TextButton = itemFrame.Button

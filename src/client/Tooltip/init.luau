@@ -24,25 +24,33 @@ function Tooltip:Enable(data)
 	main.Rarity.TextColor3 = data.Rarity.Color
 	main.Description.Text = data.Description or ""
 
-	--- Calculate drop chance
-	local items = ItemData:GetCategory(data.Category):GetItems()
-	local totalWeight = RandomSelection:_getTotalWeight(Dictionary.map(items, function(data, id)
-		return data.DropChance or 100, id
-	end))
+	if data.Category then
+		--- Calculate drop chance
+		local items = ItemData:GetCategory(data.Category):GetItems()
+		local totalWeight = RandomSelection:_getTotalWeight(Dictionary.map(items, function(data, id)
+			return data.DropChance or 100, id
+		end))
 
-	main.DropChance.Count.Text = `{Tooltip:DecimalNumbers((data.DropChance / totalWeight) * 100, 2)}%`
+		main.DropChance.Count.Text = `{Tooltip:DecimalNumbers((data.DropChance / totalWeight) * 100, 2)}%`
 
-	if not Tooltip._Cached[data.Category] then
-		Tooltip._Cached[data.Category] = {}
+		if not Tooltip._Cached[data.Category] then
+			Tooltip._Cached[data.Category] = {}
+		end
+
+		--- Request to the server the count for this item
+		if not Tooltip._Cached[data.Category][data.Id] then
+			local results = Zap.RequestItemCount.Call({ category = data.Category, id = data.Id })
+			Tooltip._Cached[data.Category][data.Id] = results.success and results.count or 0
+		end
+
+		main.FoundFrame.Count.Text = Tooltip._Cached[data.Category][data.Id]
+		main.FoundFrame.Visible = true
+		main.DropChance.Visible = true
+	else
+		main.FoundFrame.Visible = false
+		main.DropChance.Visible = false
 	end
 
-	--- Request to the server the count for this item
-	if not Tooltip._Cached[data.Category][data.Id] then
-		local results = Zap.RequestItemCount.Call({ category = data.Category, id = data.Id })
-		Tooltip._Cached[data.Category][data.Id] = results.success and results.count or 0
-	end
-
-	main.FoundFrame.Count.Text = Tooltip._Cached[data.Category][data.Id]
 	ToolUI.Enabled = true
 end
 

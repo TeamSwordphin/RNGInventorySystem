@@ -13,6 +13,8 @@ local TweenService = game:GetService("TweenService")
 
 local DynamicDepth = require(ReplicatedStorage.Libraries.DynamicDepth)
 local Janitor = require(ReplicatedStorage.Libraries.Janitor)
+local Freeze = require(ReplicatedStorage.Libraries.Freeze)
+local List = Freeze.List
 
 local Settings = require(ReplicatedStorage.Modules.GlobalSettings)
 local ItemData = require(ReplicatedStorage.Modules.ItemData)
@@ -25,12 +27,26 @@ local TradeUI
 local Player = Players.LocalPlayer
 local TradeJanitor = Janitor.new()
 
-local TradeSystem = { _IsTradeEnabled = true, _ThumbnailCache = {} }
+local TradeSystem = { _IsTradeEnabled = false, _ThumbnailCache = {} }
+
+function TradeSystem:SetTradeEnabled(new: boolean)
+	TradeSystem._IsTradeEnabled = new
+
+	if new == true then
+		TradeUI.Trade.ImageColor3 = Color3.fromRGB(255, 255, 255)
+		TradeUI.Trade.Title.TextColor3 = Color3.fromRGB(240, 255, 251)
+	end
+end
 
 function TradeSystem:GetUserThumbnailAsync(userId: number)
+	if userId <= 1 then
+		userId = 297701
+	end
+
 	if not TradeSystem._ThumbnailCache[userId] then
-		local content, isReady =
-			Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+		local thumbnailType = Enum.ThumbnailType.HeadShot
+		local thumbnailSize = Enum.ThumbnailSize.Size420x420
+		local content, isReady = Players:GetUserThumbnailAsync(userId, thumbnailType, thumbnailSize)
 
 		TradeSystem._ThumbnailCache[userId] = isReady and content or ""
 	end
@@ -44,7 +60,7 @@ function TradeSystem:Open()
 	end
 
 	for _, player in Players:GetPlayers() do
-		if player:GetAttribute("IgnoreTradeRequests") then
+		if player == Player or player:GetAttribute("IgnoreTradeRequests") then
 			continue
 		end
 
@@ -151,10 +167,10 @@ Zap.OnServerTradeBegun.On(function(data: { inviter: Player, recipient: Player })
 	widget.Visible = true
 
 	local playerWidget = widget.Trading.Players
-	playerWidget.ThemFrame.PlayerIcon.Image = TradeSystem:GetUserThumbnailAsync(inviter.UserId)
-	playerWidget.ThemFrame.PlayerName.Text = inviter.DisplayName
-	playerWidget.YouFrame.PlayerIcon.Image = TradeSystem:GetUserThumbnailAsync(recipient.UserId)
-	playerWidget.YouFrame.PlayerName.Text = recipient.DisplayName
+	playerWidget.ThemFrame.Player.PlayerIcon.Image = TradeSystem:GetUserThumbnailAsync(inviter.UserId)
+	playerWidget.ThemFrame.Player.PlayerName.Text = inviter.DisplayName
+	playerWidget.YouFrame.Player.PlayerIcon.Image = TradeSystem:GetUserThumbnailAsync(recipient.UserId)
+	playerWidget.YouFrame.Player.PlayerName.Text = recipient.DisplayName
 	playerWidget.Middle.ArrowLeft.ImageColor3 = Color3.fromRGB(255, 255, 255)
 	playerWidget.Middle.ArrowRight.ImageColor3 = Color3.fromRGB(255, 255, 255)
 
@@ -173,17 +189,22 @@ Zap.OnServerTradeBegun.On(function(data: { inviter: Player, recipient: Player })
 	yes.Parent = widget.Trading.Buttons
 
 	no.MouseButton1Click:Connect(function()
+		TradeJanitor:Cleanup()
 		no:Destroy()
 		yes:Destroy()
 		Zap.SendClientTradeCancel.Fire()
 	end)
 
 	yes.MouseButton1Click:Connect(function()
+		TradeJanitor:Cleanup()
 		playerWidget.Middle.ArrowRight.ImageColor3 = Color3.fromRGB(106, 211, 106)
 		widget.Trading.Buttons.Message.Text = "Offer Accepted"
 		widget.Trading.Buttons.Message.Visible = true
 		yes.Visible = false
+		Zap.ClientAcceptTradeOffer.Fire()
 	end)
+
+	local items = {}
 
 	local function onItemFrameClicked(itemFrame)
 		local button = itemFrame:WaitForChild("Button", 10)
@@ -192,32 +213,57 @@ Zap.OnServerTradeBegun.On(function(data: { inviter: Player, recipient: Player })
 			return
 		end
 
-		button.MouseButton1Click:Connect(function()
-			local frame = playerWidget.YouFrame.PlayerIcon:FindFirstChildOfClass("Frame")
+		TradeJanitor:Add(button.MouseButton1Click:Connect(function()
+			local category = itemFrame:GetAttribute("Category")
+			local id = itemFrame:GetAttribute("Id")
+			local level = itemFrame:GetAttribute("Level")
 
-			local clone = itemFrame:Clone()
-			clone:RemoveTag("_UIItemFrame")
-			clone:AddTag("_UITradingComponentInvite")
-			clone.Count.Visible = false
-			clone.Position = UDim2.fromScale(1, 1)
-			clone.Size = UDim2.fromScale(0.8, 0.8)
-			clone.AnchorPoint = Vector2.new(0.5, 1)
-			clone.Parent = playerWidget.YouFrame.PlayerIcon
+			local ifExists = List.find(items, function(data)
+				if data.level == level and data.id == id and data.category == category then
+					return true
+				end
 
-			local reference = ItemData:GetCategory(clone:GetAttribute("Category"))
-			local item = reference:GetItem(clone:GetAttribute("Id"))
+				return false
+			end)
+
+			local clone
+
+			if ifExists then
+				if ifExists.count < ifExists.button:GetAttribute("Count") then
+					ifExists.count += 1
+				end
+
+				clone = ifExists.button
+			else
+				clone = itemFrame:Clone()
+				clone:RemoveTag("_UIItemFrame")
+				clone:AddTag("_UITradingComponentInvite")
+				clone.Position = UDim2.fromScale(1, 1)
+				clone.Size = UDim2.fromScale(0.8, 0.8)
+				clone.AnchorPoint = Vector2.new(0.5, 1)
+				clone.Parent = playerWidget.YouFrame.Inventory
+
+				ifExists = { category = category, id = id, level = level, count = 1, button = clone }
+
+				table.insert(items, ifExists)
+			end
+
+			clone.Count.Text = `x{ifExists.count}`
+
+			local reference = ItemData:GetCategory(category)
+			local item = reference:GetItem(id)
 			local rarity = RarityReference[item.Rarity]
 			local button: TextButton = clone.Button
 
 			button.MouseMoved:Connect(function(x, y)
 				Tooltip:Enable({
-					Name = `{clone.Name} Lv.{clone:GetAttribute("Level")}`,
+					Name = `{clone.Name} Lv.{level}`,
 					Description = item.Description,
 					Rarity = rarity,
 					DropChance = item.DropChance,
 					Position = UDim2.fromOffset(x, y),
-					Category = clone:GetAttribute("Category"),
-					Id = clone:GetAttribute("Id"),
+					Category = category,
+					Id = id,
 				})
 			end)
 			button.MouseLeave:Connect(function()
@@ -225,17 +271,13 @@ Zap.OnServerTradeBegun.On(function(data: { inviter: Player, recipient: Player })
 			end)
 
 			Zap.ClientSentItemTradeOffer.Fire({
-				category = clone:GetAttribute("Category"),
-				id = clone:GetAttribute("Id"),
-				level = clone:GetAttribute("Level"),
+				category = category,
+				id = id,
+				level = level,
 			})
 
 			yes.Visible = true
-
-			if frame then
-				frame:Destroy()
-			end
-		end)
+		end))
 	end
 
 	for _, button in CollectionService:GetTagged("_UIItemTradable") do
@@ -249,54 +291,81 @@ Zap.OnServerTradeBegun.On(function(data: { inviter: Player, recipient: Player })
 	Player.PlayerGui.Inventory.Main.Visible = true
 end)
 
---- Listen for item offer changes. Purely visual.
-Zap.ServerSentItemTradeOffer.On(function(data: { category: string, id: number, level: number })
-	local category = data.category
-	local id = data.id
-	local level = data.level
+--- Listen for item offer changes from the recipient. Purely visual.
+Zap.ServerSentItemTradeOffer.On(function(datas: { Zap.TradeData })
+	for _, ui in CollectionService:GetTagged("_UITradingItem") do
+		ui:Destroy()
+	end
 
-	local reference = ItemData:GetCategory(category)
-	local item = reference:GetItem(id)
-	local name = item.Name
-	local icon = item.Icon
-	local rarity = RarityReference[item.Rarity]
+	for index, data in datas do
+		local category = data.category
+		local id = data.id
+		local level = data.level
+		local count = data.count or 1
 
+		local reference = ItemData:GetCategory(category)
+		local item = reference:GetItem(id)
+		local name = item.Name
+		local icon = item.Icon
+		local rarity = RarityReference[item.Rarity]
+
+		local widget = TradeUI.TradeWidget
+		local playerWidget = widget.Trading.Players
+
+		local clone = Player.PlayerGui.Inventory.Elements.ItemFrame:Clone()
+		clone:AddTag("_UITradingComponentInvite")
+		clone:AddTag("_UITradingItem")
+		clone:RemoveTag("_UIItemFrame")
+		clone.Count.Text = `x{count}`
+		clone.Visible = true
+		clone.Name = name
+		clone.Icon.Image = icon
+		clone.UIStroke.Color = rarity.Color
+		clone.Position = UDim2.fromScale(0, 1)
+		clone.Size = UDim2.fromScale(0.8, 0.8)
+		clone.AnchorPoint = Vector2.new(0.5, 1)
+		clone.Parent = playerWidget.ThemFrame.Inventory
+
+		local button: TextButton = clone.Button
+		button.MouseMoved:Connect(function(x, y)
+			Tooltip:Enable({
+				Name = `{name} Lv.{level}`,
+				Description = item.Description,
+				Rarity = rarity,
+				DropChance = item.DropChance,
+				Position = UDim2.fromOffset(x, y),
+				Category = category,
+				Id = id,
+			})
+		end)
+		button.MouseLeave:Connect(function()
+			Tooltip:Disable()
+		end)
+	end
+end)
+
+--- Listen for the recipient to accept the trade offer
+Zap.ServerSentAcceptTradeOffer.On(function()
 	local widget = TradeUI.TradeWidget
 	local playerWidget = widget.Trading.Players
-	local frame = playerWidget.ThemFrame.PlayerIcon:FindFirstChildOfClass("Frame")
+	playerWidget.Middle.ArrowLeft.ImageColor3 = Color3.fromRGB(106, 211, 106)
+end)
 
-	local clone = Player.PlayerGui.Inventory.Elements.ItemFrame:Clone()
-	clone:AddTag("_UITradingComponentInvite")
-	clone:RemoveTag("_UIItemFrame")
-	clone.Count.Visible = false
-	clone.Visible = true
-	clone.Name = name
-	clone.Icon.Image = icon
-	clone.UIStroke.Color = rarity.Color
-	clone.Position = UDim2.fromScale(0, 1)
-	clone.Size = UDim2.fromScale(0.8, 0.8)
-	clone.AnchorPoint = Vector2.new(0.5, 1)
-	clone.Parent = playerWidget.ThemFrame.PlayerIcon
+--- Listen if both parties have agreed to this trade
+Zap.BothPartiesAcceptedTradeOffer.On(function()
+	TradeJanitor:Add(task.defer(function()
+		local widget = TradeUI.TradeWidget
 
-	local button: TextButton = clone.Button
-	button.MouseMoved:Connect(function(x, y)
-		Tooltip:Enable({
-			Name = `{name} Lv.{level}`,
-			Description = item.Description,
-			Rarity = rarity,
-			DropChance = item.DropChance,
-			Position = UDim2.fromOffset(x, y),
-			Category = category,
-			Id = id,
-		})
-	end)
-	button.MouseLeave:Connect(function()
-		Tooltip:Disable()
-	end)
+		for i = 3, 1, -1 do
+			widget.Trading.Buttons.Message.Text = `Trading in... {i}`
+			widget.Trading.Buttons.Message.Visible = true
+			task.wait(1)
+		end
 
-	if frame then
-		frame:Destroy()
-	end
+		widget.Trading.Buttons.Message.Text = `Traded success!`
+		task.wait(3)
+		widget.Visible = false
+	end))
 end)
 
 --- Listen to trade cancel requests
@@ -308,6 +377,8 @@ Zap.OnServerTradeCancel.On(function()
 	TradeJanitor:Cleanup()
 
 	local widget = TradeUI.TradeWidget
+	widget.Visible = false
+	widget.Visible = true
 	widget.Trading.Buttons.Message.Text = "Trade Cancelled!"
 	widget.Trading.Buttons.Message.Visible = true
 
@@ -343,11 +414,47 @@ local function Init()
 		TradeUI.Main.Visible = false
 	end)
 
+	local _purchaseText = TradeUI.PurchaseTradeOption.Message.Text
+
 	TradeUI.Trade.MouseButton1Click:Connect(function()
 		if TradeSystem._IsTradeEnabled then
 			TradeUI.Main.Visible = not TradeUI.Main.Visible
+		else
+			-- Run purchase prompt
+			TradeUI.PurchaseTradeOption.Message.Text = _purchaseText
+			TradeUI.PurchaseTradeOption.Visible = true
 		end
 	end)
+
+	TradeUI.Main.Header.IgnoreRequest.MouseButton1Click:Connect(function()
+		Zap.ClientToggleIgnoreTradeRequest.Fire()
+	end)
+
+	TradeUI.PurchaseTradeOption.Buttons.No.MouseButton1Click:Connect(function()
+		TradeUI.PurchaseTradeOption.Visible = false
+	end)
+
+	TradeUI.PurchaseTradeOption.Buttons.Yes.MouseButton1Click:Connect(function()
+		local data = Zap.ClientPurchaseTradeFeature.Call()
+		local success = data.success
+
+		if success then
+			TradeUI.PurchaseTradeOption.Visible = false
+		else
+			TradeUI.PurchaseTradeOption.Message.Text = "Not enough Money!"
+		end
+	end)
+
+	local function onTradeToggleChanged()
+		local toggle = not Player:GetAttribute("IgnoreTradeRequests")
+
+		TradeUI.Main.Header.IgnoreRequest.Icon.ImageTransparency = toggle and 0 or 1
+		TradeUI.Main.Header.IgnoreRequest.Title.TextColor3 = toggle and Color3.fromRGB(71, 167, 69)
+			or Color3.fromRGB(65, 72, 62)
+	end
+
+	onTradeToggleChanged()
+	Player:GetAttributeChangedSignal("IgnoreTradeRequests"):Connect(onTradeToggleChanged)
 
 	Players.PlayerRemoving:Connect(function(player: Player)
 		TradeSystem._ThumbnailCache[player.UserId] = nil

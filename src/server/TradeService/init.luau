@@ -10,24 +10,28 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
+local DropData = require(ReplicatedStorage.Modules.DropData)
 local Settings = require(ReplicatedStorage.Modules.GlobalSettings)
+local ProfileService = require(ReplicatedStorage.Libraries.ProfileService)
 local Freeze = require(ReplicatedStorage.Libraries.Freeze)
-local Dictionary = Freeze.Dictionary
+local List = Freeze.List
 
 local Zap = require(ServerScriptService.Network.Zap)
 local PlayerData = require(ServerScriptService.ServerSystems.PlayerDataService)
 
-local TradeService = { _RecentlyInvited = {}, _CurrentlyTrading = {} }
+local TradeService = { _RecentlyInvited = {}, _CurrentlyTrading = {}, _LastOutageTime = -9999 }
 
-function TradeService:CancelTrade(player: Player)
+function TradeService:CancelTrade(player: Player, doNotFire: boolean?)
 	if TradeService._CurrentlyTrading[player] then
 		-- Send cancel command
-		Zap.OnServerTradeCancel.Fire(player)
+		if doNotFire == nil then
+			Zap.OnServerTradeCancel.Fire(player)
+		end
 
 		-- Cancel any recipients connected to this player
 		local recipient = TradeService._CurrentlyTrading[player].Recipient
 		TradeService._CurrentlyTrading[player] = nil -- Nil this first so it doesn't infinitely loop
-		TradeService:CancelTrade(recipient)
+		TradeService:CancelTrade(recipient, doNotFire)
 
 		-- Put them on mild cooldown right after cancellation
 		TradeService._RecentlyInvited[player] = {
@@ -35,6 +39,50 @@ function TradeService:CancelTrade(player: Player)
 			InvitedFrom = player,
 		}
 	end
+end
+
+--- Sanity check their saves to ensure that they have this item
+function TradeService:SanityCheckForItem(
+	player: Player,
+	data: { category: string, id: number, level: number },
+	count: number?
+)
+	local category = data.category
+	local id = data.id
+	local level = data.level
+
+	local inventory = PlayerData:Get(player, "Inventory")
+
+	if not inventory[category] then
+		print(inventory)
+		error(`No category of {category} was found in {player.Name}'s profile!`)
+		return
+	end
+
+	local item = inventory[category][tostring(id)]
+
+	if not item then
+		print(inventory[category])
+		error(`No item id in {category} of {id} was found in {player.Name}'s profile!`)
+		return
+	end
+
+	local levelString = tostring(level)
+	local numberedItem = item[levelString]
+
+	if not numberedItem then
+		print(item)
+		error(`No item with the level {level} in {category} of {id} was found in {player.Name}'s profile!`)
+		return
+	end
+
+	if numberedItem.Count < (count or 1) then
+		print(numberedItem)
+		error(`Item is lower than the required count!`)
+		return
+	end
+
+	return numberedItem, item, levelString
 end
 
 --- Listens for outbound trade requests from players
@@ -145,11 +193,13 @@ Zap.AcceptPlayerTradeRequest.On(function(recipient: Player, inviter: Player)
 	TradeService._CurrentlyTrading[inviter] = {
 		Recipient = recipient,
 		Accepted = false,
+		Items = {},
 	}
 
 	TradeService._CurrentlyTrading[recipient] = {
 		Recipient = inviter,
 		Accepted = false,
+		Items = {},
 	}
 
 	TradeService._RecentlyInvited[recipient] = nil
@@ -164,43 +214,12 @@ Zap.SendClientTradeCancel.On(function(player)
 	TradeService:CancelTrade(player)
 end)
 
---- Sanity check their saves to ensure that they have this item
-function TradeService:SanityCheckForItem(player, data)
-	local category = data.category
-	local id = data.id
-	local level = data.level
-
-	local inventory = PlayerData:Get(player, "Inventory")
-
-	if not inventory[category] then
-		warn(`No category of {category} was found in {player.Name}'s profile!`)
-		return
-	end
-
-	local item = inventory[category][tostring(id)]
-
-	if not item then
-		warn(`No item id in {category} of {id} was found in {player.Name}'s profile!`)
-		return
-	end
-
-	if not item[tostring(level)] then
-		warn(`No item with the level {level} in {category} of {id} was found in {player.Name}'s profile!`)
-		return
-	end
-
-	return item[tostring(level)]
-end
-
 --- Listen for item offers
 Zap.ClientSentItemTradeOffer.On(function(player: Player, data: { category: string, id: number, level: number })
 	if not TradeService._CurrentlyTrading[player] then
 		return
 	end
 
-	local category = data.category
-	local id = data.id
-	local level = data.level
 	local item = TradeService:SanityCheckForItem(player, data)
 
 	if not item then
@@ -211,16 +230,209 @@ Zap.ClientSentItemTradeOffer.On(function(player: Player, data: { category: strin
 	local tradeData = TradeService._CurrentlyTrading[player]
 	local recipient = tradeData.Recipient
 
-	tradeData.Item = { category, id, level }
+	-- Cannot change the offer if they have already accepted the offer!
+	if tradeData.Accepted then
+		return
+	end
 
-	-- Send to the recipient
-	Zap.ServerSentItemTradeOffer.Fire(recipient, data)
+	-- Find if they have already inputted this item into the trade
+	local ifItemExists = List.find(tradeData.Items, function(item)
+		if item.category == data.category and item.id == data.id and item.level == data.level then
+			return true
+		end
+
+		return false
+	end)
+
+	if ifItemExists then
+		if item.Count > ifItemExists.count then
+			ifItemExists.count += 1
+		else
+			warn(`{player.Name} tried to add more of what they don't have!`)
+			return
+		end
+	else
+		local newData = data
+		newData.count = 1
+
+		table.insert(tradeData.Items, newData)
+	end
+
+	-- Send to the recipient the offer changes
+	Zap.ServerSentItemTradeOffer.Fire(recipient, tradeData.Items)
+end)
+
+--- Listen for player accepting the trade offer
+Zap.ClientAcceptTradeOffer.On(function(player)
+	local tradeDataHost = TradeService._CurrentlyTrading[player]
+
+	if not tradeDataHost then
+		return
+	end
+
+	tradeDataHost.Accepted = true
+
+	local recipient = tradeDataHost.Recipient
+
+	-- Send to the recipient that the other person has accepted the trade offer
+	Zap.ServerSentAcceptTradeOffer.Fire(recipient)
+
+	-- Check if recipient has also accepted the offer
+	local tradeDataRecipient = TradeService._CurrentlyTrading[recipient]
+
+	if not tradeDataRecipient then
+		return
+	end
+
+	if tradeDataHost.Accepted and tradeDataRecipient.Accepted then
+		print("Both parties accepted trade! Counting down!")
+		Zap.BothPartiesAcceptedTradeOffer.FireList({ player, recipient })
+
+		-- Countdown to the accepting, for which any players can back out now
+		task.wait(3)
+
+		-- Double check if they are still trading with each other
+		if
+			not player
+			or not recipient
+			or not TradeService._CurrentlyTrading[player]
+			or not TradeService._CurrentlyTrading[recipient]
+		then
+			warn(`One of the parties has cancelled the trade!`)
+			return
+		end
+
+		-- Ensure that the server is not currently in a datastore outage
+		if (os.clock() - TradeService._LastOutageTime) < 120 then
+			TradeService:CancelTrade(player)
+			error("Datastore outage detected! Please try the trade again later!")
+			return
+		end
+
+		-- Ensure that both recipient and host still retains the items
+		local function checkItemsInQueue(target: Player, datas: { Zap.TradeData })
+			for _, item in datas do
+				if not TradeService:SanityCheckForItem(target, item, item.count) then
+					return false
+				end
+			end
+
+			return true
+		end
+
+		local hostItems = checkItemsInQueue(player, tradeDataHost.Items)
+		local recipientItems = checkItemsInQueue(recipient, tradeDataRecipient.Items)
+
+		if not hostItems or not recipientItems then
+			TradeService:CancelTrade(player)
+			warn(`The items were not found in one or more player's inventories!`)
+			return
+		end
+
+		print("Trading!")
+
+		local hostInventory = PlayerData:Get(player, "Inventory")
+		local recipientInventory = PlayerData:Get(recipient, "Inventory")
+
+		-- Remove both parties items first
+		local function removeItems(target: Player, inventory, datas: { Zap.TradeData })
+			for _, item in datas do
+				local found, itemTable, level = TradeService:SanityCheckForItem(target, item)
+				found.Count -= item.count
+
+				if found.Count <= 0 then
+					itemTable[level] = nil
+				end
+			end
+		end
+
+		removeItems(player, hostInventory, tradeDataHost.Items)
+		removeItems(recipient, recipientInventory, tradeDataRecipient.Items)
+
+		-- Add the items to both parties
+		local function addItems(target: Player, inventory, datas: { Zap.TradeData })
+			for _, item in datas do
+				local category = item.category
+				local id = tostring(item.id)
+				local level = tostring(item.level)
+				local count = item.count
+
+				if not inventory[category] then
+					inventory[category] = {}
+				end
+
+				if inventory[category][id] then
+					if not inventory[category][id][level] then
+						inventory[category][id][level] = { Count = 0 }
+					end
+
+					inventory[category][id][level].Count += count
+				else
+					inventory[category][id] = { [level] = table.clone(DropData) }
+					inventory[category][id][level].Count = count
+				end
+			end
+		end
+
+		addItems(player, hostInventory, tradeDataRecipient.Items)
+		addItems(recipient, recipientInventory, tradeDataHost.Items)
+
+		print("Items traded!")
+
+		--- Set the data and replicate these changes to the client
+		PlayerData:Set(player, "Inventory", hostInventory)
+		PlayerData:Set(recipient, "Inventory", recipientInventory)
+
+		-- Accelerate profileservice saving
+		local hostProfile = PlayerData:GetProfile(player)
+		local recipientProfile = PlayerData:GetProfile(recipient)
+
+		hostProfile:Save()
+		recipientProfile:Save()
+
+		print("Profiles saved from trading!")
+
+		-- Reset trade states
+		TradeService:CancelTrade(player, true)
+	else
+		print("Other party has not yet accepted the trade!")
+	end
+end)
+
+--- Listen for client ignoring trade request toggles
+Zap.ClientToggleIgnoreTradeRequest.On(function(player)
+	PlayerData:Set(player, "TradeIgnoreRequests", not PlayerData:Get(player, "TradeIgnoreRequests"))
+	player:SetAttribute("IgnoreTradeRequests", PlayerData:Get(player, "TradeIgnoreRequests"))
+end)
+
+--- Listen for client requesting trade option purchases
+Zap.ClientPurchaseTradeFeature.SetCallback(function(player: Player)
+	if PlayerData:Get(player, "Money") >= Settings.Trading_Cost then
+		PlayerData:Set(player, "Money", PlayerData:Get(player, "Money") - Settings.Trading_Cost)
+		PlayerData:Set(player, "TradeUnlocked", true)
+
+		return { success = true }
+	end
+
+	return { success = false }
 end)
 
 local function Init()
-	Players.PlayerAdded:Connect(function(player: Player)
+	Players.PlayerRemoving:Connect(function(player: Player)
 		TradeService:CancelTrade(player)
 		TradeService._RecentlyInvited[player] = nil
+	end)
+
+	Players.PlayerAdded:Connect(function(player: Player)
+		if not player:GetAttribute("Loaded") then
+			player:GetAttributeChangedSignal("Loaded"):Wait()
+		end
+
+		player:SetAttribute("IgnoreTradeRequests", PlayerData:Get(player, "TradeIgnoreRequests"))
+	end)
+
+	ProfileService.CriticalStateSignal:Connect(function()
+		TradeService._LastOutageTime = os.clock()
 	end)
 end
 

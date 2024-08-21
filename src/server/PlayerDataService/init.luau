@@ -79,6 +79,7 @@ function PlayerAdded(player: Player)
 				Replication = player,
 			})
 
+			player:SetAttribute("Loaded", true)
 			print(`{player.Name} data loaded!`)
 		else
 			profile:Release()
