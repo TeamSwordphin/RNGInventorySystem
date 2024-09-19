@@ -23,6 +23,7 @@ local ItemData = require(ReplicatedStorage.Modules.ItemData)
 local Zap = require(ReplicatedStorage.Network.Zap)
 
 local Tooltip = require(script.Parent.Tooltip)
+local RollAnimator = require(script.Parent.RollAnimator)
 
 local InventoryUI
 
@@ -46,10 +47,13 @@ local function RequestLootDrop()
 		local id: number = results.id
 		local reference = ItemData:GetCategory(category)
 		local item = reference:GetItem(id)
-		local rarity = RarityReference[item.Rarity]
+		--	local rarity = RarityReference[item.Rarity]
 
-		notifier.TextColor3 = rarity.Color
-		notifier.Text = `+1 {rarity.Name} Item: {item.Name}`
+		RollAnimator:Activate(item)
+
+		notifier.Text = ""
+	--	notifier.TextColor3 = rarity.Color
+	--	notifier.Text = `+1 {rarity.Name} Item: {item.Name}`
 	else
 		notifier.Text = `{category} is on cooldown!`
 	end
